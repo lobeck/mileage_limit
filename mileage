@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+# -*- mode: python; coding: utf-8 -*-
+import argparse
+import os
+from datetime import datetime, timezone
+
+from influxdb import InfluxDBClient
+
+
+def valid_date(s):
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        msg = "Not a valid date: '{0}'.".format(s)
+        raise argparse.ArgumentTypeError(msg)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser("script to send contract details to InfluxDB")
+    parser.add_argument("--limit", type=int, required=True)
+    parser.add_argument("--start-date", required=True, type=valid_date, help="format: YYYY-MM-DD")
+    parser.add_argument("--model", default=os.getenv("VEHICLE_MODEL", None))
+    parser.add_argument("--modelyear", default=os.getenv("VEHICLE_MODELYEAR", None))
+    parser.add_argument("--registration", default=os.getenv("VEHICLE_REGISTRATION", None))
+    parser.add_argument("--vin", default=os.getenv("VEHICLE_VIN", None))
+    parser.add_argument("--influxdb-host", default=os.getenv("INFLUXDB_HOST", None))
+    parser.add_argument("--influxdb-port", default=os.getenv("INFLUXDB_PORT", 8086))
+    parser.add_argument("--influxdb-user", default=os.getenv("INFLUXDB_USER", ""))
+    parser.add_argument("--influxdb-password", default=os.getenv("INFLUXDB_PASSWORD", ""))
+    parser.add_argument("--influxdb-database", default=os.getenv("INFLUXDB_DATABASE", "default"))
+    parser.add_argument("--influxdb-ssl", default=True)
+    parser.add_argument("--influxdb-insecure", default=False, action='store_true')
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    args = parse_args()
+
+    kilometers_per_second = args.limit / (365 * 86400)
+    now = datetime.now().astimezone(timezone.utc)
+
+    current_meters = round(kilometers_per_second * (now - args.start_date).total_seconds() * 1000, None)
+
+    if args.influxdb_host is None:
+        print(current_meters)
+    else:
+        client = InfluxDBClient(args.influxdb_host, args.influxdb_port, args.influxdb_user, args.influxdb_password,
+                                args.influxdb_database, ssl=args.influxdb_ssl, verify_ssl=not args.influxdb_insecure)
+
+        payload = {
+            "measurement": "odometer",
+            "tags": {},
+            "time": now.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            "fields": {
+                "allowed": current_meters
+            }
+        }
+        if args.model:
+            payload["tags"]["model"] = args.model
+        if args.modelyear:
+            payload["tags"]["modelyear"] = args.modelyear
+        if args.registration:
+            payload["tags"]["registration"] = args.registration
+        if args.vin:
+            payload["tags"]["vin"] = args.vin
+
+        client.write_points([payload])
